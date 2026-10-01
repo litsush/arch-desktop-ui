@@ -1,0 +1,6 @@
+#!/bin/sh
+# Runs a command in foot. GLib (and so Thunar) launches terminal apps such as vim through
+# `xdg-terminal-exec <command>`, and doesn't know foot by name. Symlink into the PATH:
+#   sudo ln -s /home/litsush/desktop-ui/xdg-terminal-exec /usr/local/bin/xdg-terminal-exec
+[ "$1" = "-e" ] && shift  # some launchers still pass xterm-style -e
+exec foot -- "$@"
