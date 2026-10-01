@@ -27,6 +27,10 @@ send a window to desktop 10, "Junk". Desktops are known by number: a named one i
 click in the Win+Tab switcher renames one; Win+Shift+F2 (`nop desktops rename`) renames the
 current desktop.
 
+Live wallpapers: windows-like.conf marks apps that draw a desktop background with _wallpaper and
+tiles them, so every (floating) window stays above them. sway puts a window on one desktop
+only, so this moves the same window to whichever desktop is shown; it's left out of Alt+Tab.
+
 Bar buttons: swaybar's workspace buttons can't be right-clicked, so while this runs they're
 turned off and drawn here instead, in the same place and colours: left-click switches desktop,
 scrolling steps through them and right-click renames one in place.
@@ -71,6 +75,7 @@ DESKTOP_CAPTURE_DELAY_MS = 500  # let a newly shown desktop finish drawing befor
 BUTTON_POLL_MS = 66  # sway has no IPC event for window moves/resizes, so poll geometry
 DESKTOPS = ("1", "2")  # desktops are keyed by their number, as a string
 JUNK_DESKTOP = "10"
+WALLPAPER_MARK = "_wallpaper"
 RENAME_MARK = "_wm_rename"  # the rename binding marks its window; underscore marks aren't drawn
 PIDFILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sway-alttab.pid")
 # sway's exec sends stderr to /dev/null or its console, so tracebacks go here instead.
@@ -169,6 +174,7 @@ def window_info(node, workspace):
         "minimized": workspace == "__i3_scratch",
         "capture_id": node.get("foreign_toplevel_identifier"),
         "focused": node.get("focused", False),
+        "wallpaper": WALLPAPER_MARK in node.get("marks", []),
     }
 
 
@@ -1019,6 +1025,29 @@ class WorkspaceBar:
         self.refresh()
 
 
+class Wallpapers:
+    """Keeps _wallpaper windows on the focused desktop."""
+
+    def __init__(self, ipc):
+        self.ipc = ipc
+        self.follow()
+
+    def follow(self):
+        desktop = next((w["name"] for w in self.ipc.request(GET_WORKSPACES) if w["focused"]), None)
+        tree = self.ipc.request(GET_TREE)
+        found = find_window(tree, lambda n: WALLPAPER_MARK in n.get("marks", []))
+        # (Left alone if minimized: it's on the scratchpad then.)
+        if not desktop or not found or found[1] in (desktop, "__i3_scratch"):
+            return False
+        before = find_window(tree, lambda n: n.get("focused"))
+        self.ipc.request(RUN_COMMAND, f"[con_id={found[0]['id']}] move container "
+                                      f"to workspace {sway_quote(desktop)}")
+        if before:
+            # Moving a window can hand it focus; give it back to the window that had it.
+            self.ipc.request(RUN_COMMAND, f"[con_id={before[0]['id']}] focus")
+        return False
+
+
 class Switcher:
     def __init__(self):
         self.ipc = SwayIPC()
@@ -1031,6 +1060,7 @@ class Switcher:
         self.homes = HomeDesktops(self.ipc)
         self.desktop_names = DesktopNames(self.ipc)
         self.bar = WorkspaceBar(self.ipc, self.desktop_names)
+        self.wallpapers = Wallpapers(self.ipc)
         self.mru = [w["id"] for w in windows_in_focus_order(self.ipc.request(GET_TREE))]
         self.desktop_mru = [desktop_key(w["name"])
                             for w in self.ipc.request(GET_WORKSPACES) if w["focused"]]
@@ -1127,6 +1157,8 @@ class Switcher:
                 if con_id in self.mru:
                     self.mru.remove(con_id)
                 self.mru.insert(0, con_id)
+            elif event["change"] == "mark":
+                self.wallpapers.follow()
             elif event["change"] == "close":
                 self.snapper.states.pop(con_id, None)
                 self.thumbs.pop(con_id, None)
@@ -1141,6 +1173,7 @@ class Switcher:
             if event["change"] == "init":
                 self.desktop_names.apply()
             elif event["change"] == "focus" and event.get("current"):
+                self.wallpapers.follow()
                 key = desktop_key(event["current"]["name"])
                 if key in self.desktop_mru:
                     self.desktop_mru.remove(key)
@@ -1172,7 +1205,7 @@ class Switcher:
         desktop = next(desktop_key(w["name"])
                        for w in self.ipc.request(GET_WORKSPACES) if w["focused"])
         windows = [w for w in windows_in_focus_order(self.ipc.request(GET_TREE))
-                   if self.homes.on_desktop(w, desktop)]
+                   if self.homes.on_desktop(w, desktop) and not w["wallpaper"]]
         for w in windows:
             w["title"] = self.titles.title(w)
             w["where"] = "minimized" if w["minimized"] else f"workspace {w['workspace']}"
@@ -1193,7 +1226,8 @@ class Switcher:
         outputs = {desktop_key(w["name"]): w["output"] for w in workspaces if w["visible"]}
         entries = []
         for key in keys:
-            on_it = [w for w in windows if desktop_key(w["workspace"]) == key]
+            on_it = [w for w in windows
+                     if desktop_key(w["workspace"]) == key and not w["wallpaper"]]
             count = f"{len(on_it)} window{'' if len(on_it) == 1 else 's'}" if on_it else "empty"
             entries.append({
                 "desktop": key,
