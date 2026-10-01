@@ -770,9 +770,11 @@ class HomeDesktops:
                 pass
         return False
 
-    def on_desktop(self, window, desktop):
-        # A minimized window we never saw on a desktop shows up on every desktop.
-        return self.homes.get(window["id"], desktop) == desktop
+    def on_desktop(self, window, desktop, existing):
+        """Whether `window` belongs on `desktop`. A minimized window whose desktop is unknown, or
+        gone (sway deletes a desktop once nothing on it is visible), belongs on every desktop."""
+        home = self.homes.get(window["id"], desktop)
+        return home == desktop or (window["minimized"] and home not in existing)
 
 
 class DesktopNames:
@@ -1218,10 +1220,11 @@ class Switcher:
     # --- switcher lifecycle -------------------------------------------------
 
     def window_entries(self):
-        desktop = next(desktop_key(w["name"])
-                       for w in self.ipc.request(GET_WORKSPACES) if w["focused"])
+        workspaces = self.ipc.request(GET_WORKSPACES)
+        desktop = next(desktop_key(w["name"]) for w in workspaces if w["focused"])
+        existing = {desktop_key(w["name"]) for w in workspaces}
         windows = [w for w in windows_in_focus_order(self.ipc.request(GET_TREE))
-                   if self.homes.on_desktop(w, desktop) and not w["wallpaper"]]
+                   if self.homes.on_desktop(w, desktop, existing) and not w["wallpaper"]]
         for w in windows:
             w["title"] = self.titles.title(w)
             w["where"] = "minimized" if w["minimized"] else f"workspace {w['workspace']}"
@@ -1264,7 +1267,8 @@ class Switcher:
     def start(self, step, mode):
         self.titles.finish(True)
         entries = self.window_entries() if mode == "windows" else self.desktop_entries()
-        if len(entries) < 2:
+        # Nothing to switch to, unless the one entry is a minimized window to bring back.
+        if len(entries) < 2 and not any(e["minimized"] for e in entries):
             return
         self.mode = mode
         self.entries = entries
