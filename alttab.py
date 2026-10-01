@@ -27,8 +27,9 @@ send a window to desktop 10, "Junk". Desktops are known by number: a named one i
 click in the Win+Tab switcher renames one; Win+Shift+F2 (`nop desktops rename`) renames the
 current desktop.
 
-Live wallpapers: windows-like.conf marks apps that draw a desktop background with _wallpaper and
-tiles them, so every (floating) window stays above them. sway puts a window on one desktop
+Live wallpapers: a window from one of WALLPAPER_APPS that opens as big as the screen is that
+app's wallpaper (its other windows, like settings, are left alone). It's tiled, so every
+(floating) window stays above it, and marked _wallpaper. sway puts a window on one desktop
 only, so this moves the same window to whichever desktop is shown; it's left out of Alt+Tab.
 
 Bar buttons: swaybar's workspace buttons can't be right-clicked, so while this runs they're
@@ -76,6 +77,7 @@ BUTTON_POLL_MS = 66  # sway has no IPC event for window moves/resizes, so poll g
 DESKTOPS = ("1", "2")  # desktops are keyed by their number, as a string
 JUNK_DESKTOP = "10"
 WALLPAPER_MARK = "_wallpaper"
+WALLPAPER_APPS = {"salish-pod"}  # app_ids of apps that draw a live desktop background
 RENAME_MARK = "_wm_rename"  # the rename binding marks its window; underscore marks aren't drawn
 PIDFILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sway-alttab.pid")
 # sway's exec sends stderr to /dev/null or its console, so tracebacks go here instead.
@@ -1026,11 +1028,24 @@ class WorkspaceBar:
 
 
 class Wallpapers:
-    """Keeps _wallpaper windows on the focused desktop."""
+    """Tiles live wallpaper windows and keeps them on the focused desktop."""
 
     def __init__(self, ipc):
         self.ipc = ipc
         self.follow()
+
+    def adopt(self, con):
+        """Called for each new window: if it's a wallpaper, make it the background."""
+        if con.get("app_id") not in WALLPAPER_APPS:
+            return
+        rect = con["rect"]
+        # These apps' other windows (the pod window, dialogs) open at ordinary sizes.
+        if not any(rect["width"] >= o["rect"]["width"] * 0.9 and
+                   rect["height"] >= o["rect"]["height"] * 0.9
+                   for o in self.ipc.request(GET_OUTPUTS) if o["active"]):
+            return
+        self.ipc.request(RUN_COMMAND, f"[con_id={con['id']}] floating disable, border none, "
+                                      f"mark --add {WALLPAPER_MARK}")
 
     def follow(self):
         desktop = next((w["name"] for w in self.ipc.request(GET_WORKSPACES) if w["focused"]), None)
@@ -1148,6 +1163,7 @@ class Switcher:
             if event["change"] in ("new", "focus", "move", "floating"):
                 self.homes.update()
             if event["change"] == "new":
+                self.wallpapers.adopt(event["container"])
                 # Give the client a moment to settle on its initial size first.
                 GLib.timeout_add(60, self.cascader.place, con_id)
             elif event["change"] == "focus":
