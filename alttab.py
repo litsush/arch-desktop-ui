@@ -1032,16 +1032,49 @@ class WorkspaceBar:
 class Wallpapers:
     """Tiles live wallpaper windows and keeps them on the focused desktop."""
 
+    # A new window's first size is whatever it opened at; the app resizes it to the screen a
+    # little later, so a new window from a wallpaper app is looked at again over its first moments.
+    RECHECK_MS = (100, 300, 700, 1500, 3000)
+
     def __init__(self, ipc):
         self.ipc = ipc
+        # Wallpapers opened while this daemon wasn't running.
+        tree = self.ipc.request(GET_TREE)
+        for con in self.candidates(tree):
+            self.adopt(con)
         self.follow()
 
+    @staticmethod
+    def candidates(tree):
+        """Unadopted windows of wallpaper apps (minimized ones are left alone)."""
+        out = []
+
+        def walk(node, workspace):
+            if node["type"] == "workspace":
+                workspace = node["name"]
+            if node.get("app_id") in WALLPAPER_APPS and workspace != "__i3_scratch" \
+                    and WALLPAPER_MARK not in node.get("marks", []):
+                out.append(node)
+            for child in node.get("nodes", []) + node.get("floating_nodes", []):
+                walk(child, workspace)
+        walk(tree, None)
+        return out
+
+    def new_window(self, con):
+        if con.get("app_id") in WALLPAPER_APPS:
+            for delay in self.RECHECK_MS:
+                GLib.timeout_add(delay, self.recheck, con["id"])
+
+    def recheck(self, con_id):
+        found = [c for c in self.candidates(self.ipc.request(GET_TREE)) if c["id"] == con_id]
+        if found:
+            self.adopt(found[0])
+        return False
+
     def adopt(self, con):
-        """Called for each new window: if it's a wallpaper, make it the background."""
-        if con.get("app_id") not in WALLPAPER_APPS:
-            return
+        """Make `con` the background if it's a wallpaper. These apps' other windows (the pod
+        window, dialogs) open at ordinary sizes; the wallpaper covers the screen."""
         rect = con["rect"]
-        # These apps' other windows (the pod window, dialogs) open at ordinary sizes.
         if not any(rect["width"] >= o["rect"]["width"] * 0.9 and
                    rect["height"] >= o["rect"]["height"] * 0.9
                    for o in self.ipc.request(GET_OUTPUTS) if o["active"]):
@@ -1165,7 +1198,7 @@ class Switcher:
             if event["change"] in ("new", "focus", "move", "floating"):
                 self.homes.update()
             if event["change"] == "new":
-                self.wallpapers.adopt(event["container"])
+                self.wallpapers.new_window(event["container"])
                 # Give the client a moment to settle on its initial size first.
                 GLib.timeout_add(60, self.cascader.place, con_id)
             elif event["change"] == "focus":
